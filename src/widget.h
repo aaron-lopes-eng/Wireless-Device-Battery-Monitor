@@ -28,4 +28,13 @@ void SetBackground(bool on);
 // Re-checks the taskbar layout and moves the widget if needed; call about once a second.
 // Returns false when the taskbar it was attached to is gone.
 bool Reposition();
+
+// The same "[icon] 30%  [icon] 93%" strip as premultiplied BGRA pixels, drawn in light colours with a
+// dark outline so it reads over any game (used by the on-screen overlay). `plateAlpha` > 0 adds a dark
+// rounded plate behind it, `border` an accent frame (shown while the overlay is being moved).
+struct StripImage {
+    int w = 0, h = 0;
+    std::vector<DWORD> px;
+};
+StripImage RenderStrip(const std::vector<WidgetItem>& items, int dpi, int plateAlpha, bool border);
 }

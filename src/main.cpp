@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "devices.h"
+#include "overlay.h"
 #include "widget.h"
 
 namespace {
@@ -28,6 +29,7 @@ constexpr UINT PLACEHOLDER_ID = 1;
 
 enum MenuId : UINT {
     ID_REFRESH = 100, ID_AUTOSTART, ID_HIDE_LAST_KNOWN, ID_WIDGET_BACKGROUND, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY,
+    ID_OVERLAY, ID_OVERLAY_MOVE, ID_OVERLAY_RESET,
     ID_DEVICE_FIRST = 1000
 };
 
@@ -46,6 +48,7 @@ bool g_wantWidget = true;      // user's choice: taskbar widget (default) or tra
 bool g_useWidget = false;      // what is actually shown right now
 bool g_hideLastKnown = false;  // hide (last known) / asleep devices from taskbar and tray
 bool g_widgetBackground = false;  // draw a plate behind the taskbar text (transparent taskbar themes)
+bool g_wantOverlay = false;    // also show the strip in the top-left screen corner (below the NVIDIA HUD)
 
 struct TrayEntry {
     UINT uid = 0;
@@ -136,6 +139,8 @@ bool LoadHideLastKnown() { return LoadBoolSetting(L"HideLastKnownDevices", false
 void SaveHideLastKnown(bool on) { SaveBoolSetting(L"HideLastKnownDevices", on); }
 bool LoadWidgetBackground() { return LoadBoolSetting(L"WidgetBackground", false); }
 void SaveWidgetBackground(bool on) { SaveBoolSetting(L"WidgetBackground", on); }
+bool LoadOverlay() { return LoadBoolSetting(L"ScreenOverlay", false); }
+void SaveOverlay(bool on) { SaveBoolSetting(L"ScreenOverlay", on); }
 
 bool AutostartEnabled() {
     wchar_t buf[MAX_PATH * 2];
@@ -375,7 +380,7 @@ int KindOrder(DeviceKind k) {  // headset first, then mouse, ... (matches the le
 }
 
 void UpdateWidget() {
-    if (!g_useWidget) return;
+    if (!g_useWidget && !overlay::Alive()) return;
     std::vector<const TrayEntry*> list;
     for (auto& [k, e] : g_entries)
         if (e.st.connected && !IsEntryHidden(e)) list.push_back(&e);
@@ -399,7 +404,8 @@ void UpdateWidget() {
         tip += e->st.name + L": " + StatusText(*e);
     }
     if (tip.empty()) tip = L"Wireless Battery: no devices with battery info found";
-    widget::SetItems(items, tip);
+    if (g_useWidget) widget::SetItems(items, tip);
+    if (overlay::Alive()) overlay::SetItems(items);
 }
 
 void OnResults(std::vector<DeviceStatus>& results) {
@@ -438,6 +444,14 @@ void OnResults(std::vector<DeviceStatus>& results) {
 // Makes the actual display match the chosen mode; falls back to tray icons if the taskbar
 // widget cannot be created (e.g. Explorer not ready yet). Called once a second.
 void Reconcile() {
+    // The screen overlay is independent of the taskbar / tray choice.
+    if (g_wantOverlay && !overlay::Alive()) {
+        if (overlay::Create(g_inst, g_hwnd, WM_WIDGET_CLICK)) UpdateWidget();
+    } else if (!g_wantOverlay && overlay::Alive()) {
+        overlay::Destroy();
+    } else {
+        overlay::KeepOnTop();
+    }
     bool alive = g_wantWidget && widget::Alive();
     if (g_wantWidget && !alive) alive = widget::Create(g_inst, g_hwnd, WM_WIDGET_CLICK, g_lightTaskbar);
     if (!g_wantWidget) widget::Destroy();
@@ -462,6 +476,13 @@ void SetWidgetBackground(bool on) {
     g_widgetBackground = on;
     SaveWidgetBackground(on);
     widget::SetBackground(on);
+}
+
+void SetOverlay(bool on) {
+    g_wantOverlay = on;
+    SaveOverlay(on);
+    if (!on) overlay::SetUnlocked(false);
+    Reconcile();
 }
 
 void SetHideLastKnown(bool on) {
@@ -507,6 +528,12 @@ void ShowMenu() {
     UINT bgFlags = MF_STRING | (g_widgetBackground ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED);
     AppendMenuW(m, bgFlags, ID_WIDGET_BACKGROUND, L"Background behind taskbar text (for transparent taskbars)");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (g_wantOverlay ? MF_CHECKED : 0), ID_OVERLAY, L"Show on screen, top left (below the NVIDIA HUD)");
+    UINT ovFlags = MF_STRING | (g_wantOverlay ? 0 : MF_GRAYED);
+    AppendMenuW(m, ovFlags | (overlay::Unlocked() ? MF_CHECKED : 0), ID_OVERLAY_MOVE,
+                L"Move on-screen overlay (drag it, then click here again to lock)");
+    AppendMenuW(m, ovFlags, ID_OVERLAY_RESET, L"Reset on-screen overlay position");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_REFRESH, L"Refresh now");
     AppendMenuW(m, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0), ID_AUTOSTART, L"Start with Windows");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
@@ -524,6 +551,9 @@ void ShowMenu() {
         case ID_WIDGET_BACKGROUND: SetWidgetBackground(!g_widgetBackground); break;
         case ID_MODE_WIDGET: SetMode(true); break;
         case ID_MODE_TRAY: SetMode(false); break;
+        case ID_OVERLAY: SetOverlay(!g_wantOverlay); break;
+        case ID_OVERLAY_MOVE: overlay::SetUnlocked(!overlay::Unlocked()); break;
+        case ID_OVERLAY_RESET: overlay::ResetPosition(); break;
         case ID_EXIT: DestroyWindow(g_hwnd); break;
         default:
             if (cmd >= ID_DEVICE_FIRST && cmd < ID_DEVICE_FIRST + keys.size()) {
@@ -598,6 +628,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DESTROY:
             KillTimer(h, TIMER_WIDGET);
             widget::Destroy();
+            overlay::Destroy();
             SetEvent(g_stopEvt);
             if (g_worker) WaitForSingleObject(g_worker, 5000);
             for (auto& [k, e] : g_entries) {
@@ -685,6 +716,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_wantWidget = LoadWidgetMode();
     g_hideLastKnown = LoadHideLastKnown();
     g_widgetBackground = LoadWidgetBackground();
+    g_wantOverlay = LoadOverlay();
     widget::SetBackground(g_widgetBackground);  // remembered by the widget across re-creation
     LoadHidden();
     Reconcile();

@@ -23,6 +23,11 @@ Battery levels of your wireless mouse, headset, keyboard and controller, right o
 
 **Tray icons:** one icon per device with the number drawn in it, plus a "Low battery" notification at 15%. The app switches to this automatically when the taskbar is vertical or can't be found.
 
+**On screen, top left (optional, this fork):** turn on *Show on screen, top left (below the NVIDIA HUD)* in the menu to also show the same `🎧 30%  🖱 93%` strip in the top-left corner of the screen, just under the NVIDIA app's performance overlay. It stays on top of other windows, ignores clicks so it never gets in the way of a game, and draws light text with a dark outline so it reads over any scene.
+- **Position:** pick *Move on-screen overlay*, drag the strip where you want it (e.g. right under your HUD's last line), then pick the item again to lock it. *Reset on-screen overlay position* puts it back. Right-click the strip while it is unlocked for the menu.
+- **Fine-tuning** (registry, `HKCU\Software\WirelessBattery`, DWORD): `OverlayScale` size in percent (default `100`), `OverlayBackground` `1` for a dark plate behind the text, `OverlayX` / `OverlayY` the position in screen pixels.
+- **Games:** it shows over borderless and windowed games, and over many "fullscreen" games too, since Windows' fullscreen optimizations usually run them borderless under the hood. A game in true *exclusive* fullscreen covers it; switch that game to borderless.
+
 Hover for details. Click for the menu: every device (click one to hide or show it), display mode, *Refresh now*, *Start with Windows*, and *Exit*. Levels refresh every 60 seconds, and right away when a device is plugged in or the PC wakes up.
 
 ## Supported devices

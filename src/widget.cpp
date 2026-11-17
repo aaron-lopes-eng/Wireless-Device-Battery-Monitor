@@ -216,31 +216,33 @@ struct Canvas {
 
 struct Piece { Mask m; Rgb color; int alpha; int gapAfter; };
 
-std::vector<Piece> Layout(int& width) {
-    Rgb fg = g_light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 };
-    Rgb red = g_light ? Rgb{ 196, 30, 40 } : Rgb{ 255, 90, 90 };
-    Rgb charge = g_light ? Rgb{ 0, 120, 212 } : Rgb{ 96, 205, 255 };
-    HFONT icons = MakeFont(Px(16), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
-    HFONT bolt = MakeFont(Px(11), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
-    HFONT text = MakeFont(Px(13), FW_NORMAL, L"Segoe UI Variable Text", L"Segoe UI");
+// Lays out "[icon] 30%  [icon] 93%" for `items` at `dpi`; `width` gets the strip width including padding.
+std::vector<Piece> Layout(const std::vector<WidgetItem>& items, bool light, int dpi, int& width) {
+    auto px = [dpi](int v) { return MulDiv(v, dpi, 96); };
+    Rgb fg = light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 };
+    Rgb red = light ? Rgb{ 196, 30, 40 } : Rgb{ 255, 90, 90 };
+    Rgb charge = light ? Rgb{ 0, 120, 212 } : Rgb{ 96, 205, 255 };
+    HFONT icons = MakeFont(px(16), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+    HFONT bolt = MakeFont(px(11), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+    HFONT text = MakeFont(px(13), FW_NORMAL, L"Segoe UI Variable Text", L"Segoe UI");
 
     std::vector<Piece> out;
-    if (g_items.empty()) out.push_back({ RenderMask(std::wstring(1, kBatteryUnknown), icons), fg, 110, 0 });
-    for (size_t i = 0; i < g_items.size(); i++) {
-        const auto& it = g_items[i];
+    if (items.empty()) out.push_back({ RenderMask(std::wstring(1, kBatteryUnknown), icons), fg, 110, 0 });
+    for (size_t i = 0; i < items.size(); i++) {
+        const auto& it = items[i];
         int a = it.dim ? 120 : 255;
         Rgb tc = it.low ? red : fg;
-        out.push_back({ RenderMask(std::wstring(1, Glyph(it.kind, it.bluetooth)), icons), fg, a, Px(5) });
+        out.push_back({ RenderMask(std::wstring(1, Glyph(it.kind, it.bluetooth)), icons), fg, a, px(5) });
         std::wstring t = !it.text.empty() ? it.text : it.percent >= 0 ? std::to_wstring(it.percent) + L"%" : L"?";
-        out.push_back({ RenderMask(t, text), tc, a, it.charging ? Px(2) : 0 });
+        out.push_back({ RenderMask(t, text), tc, a, it.charging ? px(2) : 0 });
         if (it.charging) out.push_back({ RenderMask(std::wstring(1, kBolt), bolt), charge, a, 0 });
-        out.back().gapAfter = i + 1 < g_items.size() ? Px(14) : 0;
+        out.back().gapAfter = i + 1 < items.size() ? px(14) : 0;
     }
     DeleteObject(icons);
     DeleteObject(bolt);
     DeleteObject(text);
 
-    width = Px(8) * 2;
+    width = px(8) * 2;
     for (auto& p : out) width += p.m.w + p.gapAfter;
     return out;
 }
@@ -251,7 +253,7 @@ void Paint() {
     GetClientRect(g_taskbar, &bar);
     int H = bar.bottom - bar.top;
     int W = 0;
-    auto pieces = Layout(W);
+    auto pieces = Layout(g_items, g_light, Dpi(), W);
     if (W <= 0 || H <= 0) return;
     Canvas cv(W, H);
 
@@ -479,6 +481,50 @@ bool Reposition() {
     g_lastLeft = left;
     SetWindowPos(g_wnd, HWND_TOP, left, 0, g_size.cx, g_size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     return true;
+}
+
+StripImage RenderStrip(const std::vector<WidgetItem>& items, int dpi, int plateAlpha, bool border) {
+    auto px = [dpi](int v) { return MulDiv(v, dpi, 96); };
+    int W = 0;
+    // Light text on any background: games vary, so the dark-theme colours plus an outline read best.
+    auto pieces = Layout(items, false, dpi, W);
+    int inkH = 0;
+    for (auto& p : pieces) inkH = std::max(inkH, p.m.h);
+    int H = inkH + px(6) * 2;
+    StripImage img;
+    if (W <= 0 || H <= 0) return img;
+    Canvas cv(W, H);
+
+    if (plateAlpha > 0 || border) {
+        int r = px(6);
+        Rgb accent{ 96, 205, 255 };
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                int dx = x < r ? r - x : (x >= W - r ? x - (W - r - 1) : 0);
+                int dy = y < r ? r - y : (y >= H - r ? y - (H - r - 1) : 0);
+                int d2 = dx * dx + dy * dy;
+                if (d2 > r * r) continue;
+                bool edge = x == 0 || y == 0 || x == W - 1 || y == H - 1 || ((dx || dy) && d2 > (r - 1) * (r - 1));
+                if (border && edge) cv.Blend(x, y, accent, 255);
+                else if (plateAlpha > 0) cv.Blend(x, y, Rgb{ 16, 16, 16 }, plateAlpha);
+            }
+    }
+
+    // A dark outline around every glyph keeps the text readable over bright game scenes.
+    int o = std::max(1, px(1));
+    int x = px(8);
+    for (auto& p : pieces) {
+        int y = (H - p.m.h) / 2;
+        for (int dy = -o; dy <= o; dy++)
+            for (int dx = -o; dx <= o; dx++)
+                if (dx || dy) cv.Draw(p.m, x + dx, y + dy, Rgb{ 0, 0, 0 }, p.alpha * 150 / 255);
+        cv.Draw(p.m, x, y, p.color, p.alpha);
+        x += p.m.w + p.gapAfter;
+    }
+    img.w = W;
+    img.h = H;
+    img.px = std::move(cv.px);
+    return img;
 }
 
 }  // namespace widget
